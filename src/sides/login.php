@@ -21,7 +21,7 @@
 
             <div class="login-actions">
                 <button class="btn btn-primary" type="submit">Login</button>
-                <a class="back-link" href="index.php">← Back to Home</a>
+                <a class="back-link" href="/">← Back to Home</a>
             </div>
         </form>
     </div>
