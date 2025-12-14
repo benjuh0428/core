@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CORE - Advanced Control Platform</title>
+    <title>CORE | Login</title>
+
     <link rel="icon" type="image/png" href="src/images/coreico.png">
+
     <link rel="stylesheet" href="src/css/main.css?v=3">
-    <link rel="stylesheet" href="src/css/header.css?v=3">
-    <link rel="stylesheet" href="src/css/footer.css?v=3">
+    <link rel="stylesheet" href="src/css/login.css?v=1">
 </head>
 <body>
-    <?php
-        include 'src/sides/home.php';
-    ?>
+    <?php include 'src/sides/login.php'; ?>
 </body>
 </html>

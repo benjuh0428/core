@@ -23,6 +23,7 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    text-decoration: none;
 }
 
 .logo-icon {
@@ -35,7 +36,6 @@
     font-weight: 800;
     letter-spacing: -0.5px;
     color: #ffffff;
-    text-decoration: none;
     margin: 0;
 }
 
@@ -73,6 +73,31 @@
     width: 100%;
 }
 
+/* Login button area */
+.nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.nav-btn {
+    padding: 0.7rem 1.1rem;
+    border-radius: 10px;
+    border: 1px solid #2a2a2a;
+    color: #ffffff;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.95rem;
+    background: rgba(255,255,255,0.06);
+    transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+
+.nav-btn:hover {
+    background: rgba(255,255,255,0.10);
+    border-color: rgba(255,255,255,0.25);
+    transform: translateY(-1px);
+}
+
 /* Responsive Design for Header */
 @media (max-width: 768px) {
     .navbar {
@@ -85,6 +110,7 @@
         gap: 1.5rem;
         flex-direction: column;
         width: 100%;
+        align-items: center;
     }
 
     .nav-links a {
@@ -93,6 +119,17 @@
 
     .logo h1 {
         font-size: 1.3rem;
+    }
+
+    .nav-actions {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .nav-btn {
+        width: 100%;
+        text-align: center;
+        max-width: 420px;
     }
 }
 
@@ -106,4 +143,3 @@
         gap: 1rem;
     }
 }
-
