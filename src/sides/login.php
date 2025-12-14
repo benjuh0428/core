@@ -7,7 +7,8 @@ $errorPublic = '';
 $expired = !empty($_GET['expired']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = trim((string)($_POST['email'] ?? ''));
+    // Accept BOTH possible field names to prevent mismatch issues
+    $email = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $remember = !empty($_POST['remember']);
 
@@ -86,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="login-alert login-alert-error"><?php echo htmlspecialchars($errorPublic); ?></div>
         <?php endif; ?>
 
-        <!-- IMPORTANT: action="" posts to SAME page -->
+        <!-- action="" is IMPORTANT: posts to /login.php -->
         <form class="login-form" method="post" action="">
             <div>
                 <label for="email">Email</label>
