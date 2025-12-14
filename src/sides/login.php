@@ -6,8 +6,9 @@ require_once 'C:\\inetpub\\core_config\\config.php';
 $errorPublic = '';
 $expired = !empty($_GET['expired']);
 
+// IMPORTANT: Only handle login when posting to /login.php
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Accept BOTH possible field names to prevent mismatch issues
+    // accept both field names, just in case
     $email = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $remember = !empty($_POST['remember']);
@@ -43,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 core_log_login_event($email, true, 'NONE', $user['uid']);
 
-                // Best-effort update
+                // Best-effort update last_login_at
                 try {
                     $up = $conn->prepare("UPDATE users SET last_login_at = NOW() WHERE uid = ?");
                     $up->bind_param("s", $user['uid']);
@@ -87,8 +88,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="login-alert login-alert-error"><?php echo htmlspecialchars($errorPublic); ?></div>
         <?php endif; ?>
 
-        <!-- action="" is IMPORTANT: posts to /login.php -->
-        <form class="login-form" method="post" action="">
+        <!-- FORCE correct target: /login.php -->
+        <form class="login-form" method="post" action="/login.php">
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
