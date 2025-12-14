@@ -1,6 +1,6 @@
 <header class="header">
     <nav class="navbar">
-        <a class="logo" href="index.php" aria-label="Go to home">
+        <a class="logo" href="/" aria-label="Go to home">
             <img src="src/images/coreico.png" alt="CORE Logo" class="logo-icon">
             <h1>CORE</h1>
         </a>
