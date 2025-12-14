@@ -15,7 +15,3 @@ function core_log_error(string $message, array $context = []): void {
 
     @file_put_contents($file, $line, FILE_APPEND);
 }
-
-function core_safe_error_box(string $text): string {
-    return '<div class="login-alert login-alert-error">' . htmlspecialchars($text) . '</div>';
-}
