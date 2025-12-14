@@ -3,17 +3,36 @@ require_once __DIR__ . '/../hook/session.php';
 require_once __DIR__ . '/../hook/core_error.php';
 require_once 'C:\\inetpub\\core_config\\config.php';
 
+/**
+ * IMPORTANT:
+ * If someone opens /src/sides/login.php directly, redirect to /login.php
+ * so POST always targets the correct root page.
+ */
+if (basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'login.php') {
+    header("Location: /login.php");
+    exit;
+}
+
 $errorPublic = '';
 $expired = !empty($_GET['expired']);
 
-// IMPORTANT: Only handle login when posting to /login.php
+// For IIS virtual directory setups, this always points to the current script path:
+$formAction = htmlspecialchars($_SERVER['REQUEST_URI'] ?? '/login.php', ENT_QUOTES, 'UTF-8');
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // accept both field names, just in case
+    // Robust input read (accept email OR username just in case)
     $email = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $remember = !empty($_POST['remember']);
 
-    if ($email === '' || $password === '') {
+    // If POST is empty, it’s 100% routing/form action issue
+    if (empty($_POST)) {
+        core_log_error("POST body empty on login submit", [
+            "script" => $_SERVER['SCRIPT_NAME'] ?? '',
+            "uri" => $_SERVER['REQUEST_URI'] ?? '',
+        ]);
+        $errorPublic = 'Login submit failed (no form data received). Check URL path / virtual directory.';
+    } elseif ($email === '' || $password === '') {
         $errorPublic = 'Please enter email and password.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorPublic = 'Please enter a valid email address.';
@@ -44,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 core_log_login_event($email, true, 'NONE', $user['uid']);
 
-                // Best-effort update last_login_at
+                // Best-effort update
                 try {
                     $up = $conn->prepare("UPDATE users SET last_login_at = NOW() WHERE uid = ?");
                     $up->bind_param("s", $user['uid']);
@@ -62,7 +81,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             core_log_error("Login exception", [
                 "err" => $e->getMessage(),
                 "email" => $email,
-                "ip" => $_SERVER['REMOTE_ADDR'] ?? '',
             ]);
             $errorPublic = 'An unexpected error occurred. Please try again.';
         }
@@ -88,8 +106,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="login-alert login-alert-error"><?php echo htmlspecialchars($errorPublic); ?></div>
         <?php endif; ?>
 
-        <!-- FORCE correct target: /login.php -->
-        <form class="login-form" method="post" action="/login.php">
+        <!-- ✅ Posts to the CURRENT URL (works with virtual dirs) -->
+        <form class="login-form" method="post" action="<?php echo $formAction; ?>">
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
