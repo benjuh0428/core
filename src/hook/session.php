@@ -178,8 +178,8 @@ function core_login(string $uid, string $email, string $role, bool $remember): v
     $_SESSION['core_ua_hash']       = hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '');
     $_SESSION['core_last_activity'] = time();
 
-    // ✅ Remember OFF => browser session cookie only (logout on browser close)
-    // ✅ Remember ON  => 30 days cookie
+    // Remember OFF => browser session cookie only (logout on browser close)
+    // Remember ON  => 30 days cookie
     core_set_session_cookie_lifetime($remember ? CORE_SESSION_TIMEOUT_REMEMBER : 0);
 
     if ($remember) {

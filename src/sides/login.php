@@ -21,9 +21,43 @@ $expired = !empty($_GET['expired']);
  */
 $formAction = '/login.php';
 
+/* -------------------------------------------------
+   Helpers (safe DB checks)
+-------------------------------------------------- */
+function core_table_exists(mysqli $conn, string $table): bool {
+    try {
+        $stmt = $conn->prepare("SHOW TABLES LIKE ?");
+        $stmt->bind_param("s", $table);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $ok = $res && $res->num_rows > 0;
+        $stmt->close();
+        return $ok;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function core_column_exists(mysqli $conn, string $table, string $column): bool {
+    try {
+        $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+        $stmt->bind_param("s", $column);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $ok = $res && $res->num_rows > 0;
+        $stmt->close();
+        return $ok;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/* -------------------------------------------------
+   POST Login
+-------------------------------------------------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // ✅ CSRF CHECK (added, required for security)
+    // CSRF CHECK
     core_csrf_verify();
 
     $email    = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
@@ -34,86 +68,137 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorPublic = 'Please enter email and password.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorPublic = 'Please enter a valid email address.';
-    } elseif ($conn === null) {
-        core_log_error("DB connection unavailable on login", [
+    } elseif (!isset($conn) || !($conn instanceof mysqli)) {
+        core_log_error("DB connection unavailable on login (conn missing or not mysqli)", [
             "email" => $email,
             "ip" => $_SERVER['REMOTE_ADDR'] ?? '',
+        ]);
+        $errorPublic = 'Database is currently unavailable. Please try again later.';
+    } elseif ($conn->connect_errno) {
+        core_log_error("DB connect error on login", [
+            "err" => $conn->connect_error,
+            "email" => $email,
         ]);
         $errorPublic = 'Database is currently unavailable. Please try again later.';
     } else {
         try {
 
-            // 🔒 Brute-force protection (5 tries / 15 min)
-            $bf = $conn->prepare("
-                SELECT COUNT(*) 
-                FROM login_events
-                WHERE email_attempted = ?
-                AND success = 0
-                AND created_at > NOW() - INTERVAL 15 MINUTE
-            ");
-            $bf->bind_param("s", $email);
-            $bf->execute();
-            $bf->bind_result($failCount);
-            $bf->fetch();
-            $bf->close();
+            /* -----------------------------------------
+               Brute-force protection (safe / optional)
+               - Only runs if login_events exists
+               - Uses created_at if present, otherwise falls back without time window
+            ------------------------------------------ */
+            $failCount = 0;
+
+            if (core_table_exists($conn, 'login_events')) {
+                $hasCreatedAt = core_column_exists($conn, 'login_events', 'created_at');
+
+                if ($hasCreatedAt) {
+                    $bf = $conn->prepare("
+                        SELECT COUNT(*)
+                        FROM login_events
+                        WHERE email_attempted = ?
+                          AND success = 0
+                          AND created_at > NOW() - INTERVAL 15 MINUTE
+                    ");
+                    if ($bf) {
+                        $bf->bind_param("s", $email);
+                        $bf->execute();
+                        $bf->bind_result($failCount);
+                        $bf->fetch();
+                        $bf->close();
+                    }
+                } else {
+                    // Fallback: no created_at column -> count last X failures (no time window)
+                    $bf = $conn->prepare("
+                        SELECT COUNT(*)
+                        FROM login_events
+                        WHERE email_attempted = ?
+                          AND success = 0
+                    ");
+                    if ($bf) {
+                        $bf->bind_param("s", $email);
+                        $bf->execute();
+                        $bf->bind_result($failCount);
+                        $bf->fetch();
+                        $bf->close();
+                    }
+                }
+            }
 
             if ($failCount >= 5) {
                 $errorPublic = 'Too many login attempts. Please wait 15 minutes.';
             } else {
 
+                /* -----------------------------------------
+                   Fetch user (this is the core login)
+                ------------------------------------------ */
                 $stmt = $conn->prepare("
                     SELECT uid, email, password_hash, role, is_active
                     FROM users
                     WHERE email = ?
                     LIMIT 1
                 ");
-                $stmt->bind_param("s", $email);
-                $stmt->execute();
-                $user = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
 
-                if (!$user) {
-                    core_log_login_event($email, false, 'NO_USER', null);
-                    $errorPublic = 'Wrong email or password.';
-                } elseif ((int)$user['is_active'] !== 1) {
-                    core_log_login_event($email, false, 'INACTIVE', $user['uid']);
-                    $errorPublic = 'This account is disabled.';
-                } elseif (!password_verify($password, $user['password_hash'])) {
-                    core_log_login_event($email, false, 'BAD_PASSWORD', $user['uid']);
-                    $errorPublic = 'Wrong email or password.';
+                if (!$stmt) {
+                    core_log_error("Prepare failed for users lookup", [
+                        "err" => $conn->error,
+                        "email" => $email,
+                    ]);
+                    $errorPublic = 'Database is currently unavailable. Please try again later.';
                 } else {
-                    core_log_login_event($email, true, 'NONE', $user['uid']);
+                    $stmt->bind_param("s", $email);
+                    $stmt->execute();
+                    $res = $stmt->get_result();
+                    $user = $res ? $res->fetch_assoc() : null;
+                    $stmt->close();
 
-                    // Best-effort update
-                    try {
-                        $up = $conn->prepare("
-                            UPDATE users SET last_login_at = NOW() WHERE uid = ?
-                        ");
-                        $up->bind_param("s", $user['uid']);
-                        $up->execute();
-                        $up->close();
-                    } catch (Throwable $e) {
-                        core_log_error("Failed updating last_login_at", [
-                            "err" => $e->getMessage()
-                        ]);
+                    if (!$user) {
+                        // logging must not break login
+                        core_log_login_event($email, false, 'NO_USER', null);
+                        $errorPublic = 'Wrong email or password.';
+                    } elseif ((int)$user['is_active'] !== 1) {
+                        core_log_login_event($email, false, 'INACTIVE', $user['uid']);
+                        $errorPublic = 'This account is disabled.';
+                    } elseif (!password_verify($password, (string)$user['password_hash'])) {
+                        core_log_login_event($email, false, 'BAD_PASSWORD', $user['uid']);
+                        $errorPublic = 'Wrong email or password.';
+                    } else {
+                        core_log_login_event($email, true, 'NONE', $user['uid']);
+
+                        // Best-effort update (won't break login)
+                        try {
+                            $up = $conn->prepare("UPDATE users SET last_login_at = NOW() WHERE uid = ?");
+                            if ($up) {
+                                $up->bind_param("s", $user['uid']);
+                                $up->execute();
+                                $up->close();
+                            }
+                        } catch (Throwable $e) {
+                            core_log_error("Failed updating last_login_at", [
+                                "err" => $e->getMessage()
+                            ]);
+                        }
+
+                        // LOGIN + REDIRECT
+                        core_login(
+                            (string)$user['uid'],
+                            (string)$user['email'],
+                            (string)$user['role'],
+                            $remember
+                        );
+
+                        header("Location: /serverlist.php");
+                        exit;
                     }
-
-                    // LOGIN + REDIRECT
-                    core_login(
-                        $user['uid'],
-                        $user['email'],
-                        $user['role'],
-                        $remember
-                    );
-
-                    header("Location: /serverlist.php");
-                    exit;
                 }
             }
+
         } catch (Throwable $e) {
             core_log_error("Login exception", [
                 "err" => $e->getMessage(),
                 "email" => $email,
+                "mysql_err" => $conn->error ?? '',
             ]);
             $errorPublic = 'An unexpected error occurred. Please try again.';
         }
@@ -141,22 +226,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
-        <!-- ✅ YOUR HTML FORM – UNCHANGED -->
         <form class="login-form" method="post" action="<?= $formAction ?>">
 
-            <!-- ✅ CSRF token (invisible, safe) -->
             <input type="hidden" name="csrf" value="<?= htmlspecialchars(core_csrf_token()) ?>">
 
             <div>
                 <label for="email">Email</label>
-                <input id="email" name="email" type="email"
-                       autocomplete="username" required>
+                <input id="email" name="email" type="email" autocomplete="username" required>
             </div>
 
             <div>
                 <label for="password">Password</label>
-                <input id="password" name="password" type="password"
-                       autocomplete="current-password" required>
+                <input id="password" name="password" type="password" autocomplete="current-password" required>
             </div>
 
             <div class="remember-row">
