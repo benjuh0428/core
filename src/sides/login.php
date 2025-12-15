@@ -58,7 +58,10 @@ function core_column_exists(mysqli $conn, string $table, string $column): bool {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // CSRF CHECK
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     core_csrf_verify();
+    }
+
 
     $email    = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');

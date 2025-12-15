@@ -353,9 +353,17 @@ function core_try_remember_login(): void {
 }
 
 /* -------------------------------------------------
-   Auto run
+   Auto run (SAFE)
+   - DO NOT touch session on login POST
 -------------------------------------------------- */
-core_try_remember_login();
-if (core_is_logged_in()) {
-    core_handle_timeout();
+$isLoginRequest =
+    ($_SERVER['REQUEST_METHOD'] === 'POST')
+    && (basename($_SERVER['SCRIPT_NAME'] ?? '') === 'login.php');
+
+if (!$isLoginRequest) {
+    core_try_remember_login();
+
+    if (core_is_logged_in()) {
+        core_handle_timeout();
+    }
 }
