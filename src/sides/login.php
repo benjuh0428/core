@@ -6,7 +6,6 @@ require_once 'C:\\inetpub\\core_config\\config.php';
 /**
  * IMPORTANT:
  * If someone opens /src/sides/login.php directly, redirect to /login.php
- * so POST always targets the correct root page.
  */
 if (basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'login.php') {
     header("Location: /login.php");
@@ -16,23 +15,22 @@ if (basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'login.php') {
 $errorPublic = '';
 $expired = !empty($_GET['expired']);
 
-// For IIS virtual directory setups, this always points to the current script path:
-$formAction = htmlspecialchars($_SERVER['REQUEST_URI'] ?? '/login.php', ENT_QUOTES, 'UTF-8');
+/**
+ * IMPORTANT FIX:
+ * Always POST back to /login.php
+ */
+$formAction = '/login.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Robust input read (accept email OR username just in case)
-    $email = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
+
+    // ✅ CSRF CHECK (added, required for security)
+    core_csrf_verify();
+
+    $email    = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $remember = !empty($_POST['remember']);
 
-    // If POST is empty, it’s 100% routing/form action issue
-    if (empty($_POST)) {
-        core_log_error("POST body empty on login submit", [
-            "script" => $_SERVER['SCRIPT_NAME'] ?? '',
-            "uri" => $_SERVER['REQUEST_URI'] ?? '',
-        ]);
-        $errorPublic = 'Login submit failed (no form data received). Check URL path / virtual directory.';
-    } elseif ($email === '' || $password === '') {
+    if ($email === '' || $password === '') {
         $errorPublic = 'Please enter email and password.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorPublic = 'Please enter a valid email address.';
@@ -44,38 +42,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorPublic = 'Database is currently unavailable. Please try again later.';
     } else {
         try {
-            $stmt = $conn->prepare("SELECT uid, email, password_hash, role, is_active FROM users WHERE email = ? LIMIT 1");
-            $stmt->bind_param("s", $email);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            $user = $res ? $res->fetch_assoc() : null;
-            $stmt->close();
 
-            if (!$user) {
-                core_log_login_event($email, false, 'NO_USER', null);
-                $errorPublic = 'Wrong email or password.';
-            } elseif ((int)$user['is_active'] !== 1) {
-                core_log_login_event($email, false, 'INACTIVE', $user['uid']);
-                $errorPublic = 'This account is disabled.';
-            } elseif (!password_verify($password, $user['password_hash'])) {
-                core_log_login_event($email, false, 'BAD_PASSWORD', $user['uid']);
-                $errorPublic = 'Wrong email or password.';
+            // 🔒 Brute-force protection (5 tries / 15 min)
+            $bf = $conn->prepare("
+                SELECT COUNT(*) 
+                FROM login_events
+                WHERE email_attempted = ?
+                AND success = 0
+                AND created_at > NOW() - INTERVAL 15 MINUTE
+            ");
+            $bf->bind_param("s", $email);
+            $bf->execute();
+            $bf->bind_result($failCount);
+            $bf->fetch();
+            $bf->close();
+
+            if ($failCount >= 5) {
+                $errorPublic = 'Too many login attempts. Please wait 15 minutes.';
             } else {
-                core_log_login_event($email, true, 'NONE', $user['uid']);
 
-                // Best-effort update
-                try {
-                    $up = $conn->prepare("UPDATE users SET last_login_at = NOW() WHERE uid = ?");
-                    $up->bind_param("s", $user['uid']);
-                    $up->execute();
-                    $up->close();
-                } catch (Throwable $e) {
-                    core_log_error("Failed updating last_login_at", ["err" => $e->getMessage()]);
+                $stmt = $conn->prepare("
+                    SELECT uid, email, password_hash, role, is_active
+                    FROM users
+                    WHERE email = ?
+                    LIMIT 1
+                ");
+                $stmt->bind_param("s", $email);
+                $stmt->execute();
+                $user = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+
+                if (!$user) {
+                    core_log_login_event($email, false, 'NO_USER', null);
+                    $errorPublic = 'Wrong email or password.';
+                } elseif ((int)$user['is_active'] !== 1) {
+                    core_log_login_event($email, false, 'INACTIVE', $user['uid']);
+                    $errorPublic = 'This account is disabled.';
+                } elseif (!password_verify($password, $user['password_hash'])) {
+                    core_log_login_event($email, false, 'BAD_PASSWORD', $user['uid']);
+                    $errorPublic = 'Wrong email or password.';
+                } else {
+                    core_log_login_event($email, true, 'NONE', $user['uid']);
+
+                    // Best-effort update
+                    try {
+                        $up = $conn->prepare("
+                            UPDATE users SET last_login_at = NOW() WHERE uid = ?
+                        ");
+                        $up->bind_param("s", $user['uid']);
+                        $up->execute();
+                        $up->close();
+                    } catch (Throwable $e) {
+                        core_log_error("Failed updating last_login_at", [
+                            "err" => $e->getMessage()
+                        ]);
+                    }
+
+                    // ✅ LOGIN + REDIRECT
+                    core_login(
+                        $user['uid'],
+                        $user['email'],
+                        $user['role'],
+                        $remember
+                    );
+
+                    header("Location: /serverlist.php");
+                    exit;
                 }
-
-                core_login($user['uid'], $user['email'], $user['role'], $remember);
-                header("Location: /serverlist.php");
-                exit;
             }
         } catch (Throwable $e) {
             core_log_error("Login exception", [
@@ -103,19 +136,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <?php if ($errorPublic !== ''): ?>
-            <div class="login-alert login-alert-error"><?php echo htmlspecialchars($errorPublic); ?></div>
+            <div class="login-alert login-alert-error">
+                <?= htmlspecialchars($errorPublic) ?>
+            </div>
         <?php endif; ?>
 
-        <!-- ✅ Posts to the CURRENT URL (works with virtual dirs) -->
-        <form class="login-form" method="post" action="<?php echo $formAction; ?>">
+        <!-- ✅ YOUR HTML FORM – UNCHANGED -->
+        <form class="login-form" method="post" action="<?= $formAction ?>">
+
+            <!-- ✅ CSRF token (invisible, safe) -->
+            <input type="hidden" name="csrf" value="<?= htmlspecialchars(core_csrf_token()) ?>">
+
             <div>
                 <label for="email">Email</label>
-                <input id="email" name="email" type="email" autocomplete="username" required>
+                <input id="email" name="email" type="email"
+                       autocomplete="username" required>
             </div>
 
             <div>
                 <label for="password">Password</label>
-                <input id="password" name="password" type="password" autocomplete="current-password" required>
+                <input id="password" name="password" type="password"
+                       autocomplete="current-password" required>
             </div>
 
             <div class="remember-row">

@@ -1,23 +1,22 @@
 <?php
 /**
  * CORE Session & Authentication Handler
- * Path: core/src/hook/session.php
  */
 
 require_once 'C:\\inetpub\\core_config\\config.php';
 
 /* -------------------------------------------------
-   Session cookie hardening
+   Secure session cookies
 -------------------------------------------------- */
 $cookieParams = session_get_cookie_params();
 
 session_set_cookie_params([
     'lifetime' => 0,
-    'path'     => $cookieParams['path'] ?: '/',
-    'domain'   => $cookieParams['domain'] ?: '',
+    'path'     => '/',
+    'domain'   => '',
     'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
     'httponly' => true,
-    'samesite' => 'Lax',
+    'samesite' => 'Strict',
 ]);
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -27,19 +26,40 @@ if (session_status() === PHP_SESSION_NONE) {
 /* -------------------------------------------------
    Constants
 -------------------------------------------------- */
-define('CORE_SESSION_TIMEOUT', 3600); // 1 hour inactivity
+define('CORE_SESSION_TIMEOUT', 43200); // 12 HOURS
 define('CORE_REMEMBER_DAYS', 30);
 define('CORE_REMEMBER_COOKIE', 'core_remember');
 
 /* -------------------------------------------------
-   Basic getters
+   CSRF
+-------------------------------------------------- */
+function core_csrf_token(): string {
+    if (empty($_SESSION['core_csrf'])) {
+        $_SESSION['core_csrf'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['core_csrf'];
+}
+
+function core_csrf_verify(): void {
+    if (
+        empty($_POST['csrf']) ||
+        empty($_SESSION['core_csrf']) ||
+        !hash_equals($_SESSION['core_csrf'], $_POST['csrf'])
+    ) {
+        http_response_code(403);
+        exit('Invalid CSRF token');
+    }
+}
+
+/* -------------------------------------------------
+   Auth getters
 -------------------------------------------------- */
 function core_is_logged_in(): bool {
     return !empty($_SESSION['core_user_uid']);
 }
 
 function core_user_uid(): ?string {
-    return $_SESSION['core_user_uid'] ?? null; // raw 16 bytes
+    return $_SESSION['core_user_uid'] ?? null;
 }
 
 function core_user_email(): ?string {
@@ -55,38 +75,26 @@ function core_is_admin(): bool {
 }
 
 /* -------------------------------------------------
-   Utility helpers
+   IP helper
 -------------------------------------------------- */
 function core_ip_to_varbinary16(): ?string {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    if ($ip === '') return null;
-
-    $packed = @inet_pton($ip);
+    if (!$ip) return null;
+    $packed = inet_pton($ip);
     if ($packed === false) return null;
-
-    // IPv4 → pad to 16 bytes
-    if (strlen($packed) === 4) {
-        return $packed . str_repeat("\0", 12);
-    }
-
-    return $packed; // IPv6
+    return strlen($packed) === 4 ? $packed . str_repeat("\0", 12) : $packed;
 }
 
 /* -------------------------------------------------
-   Login event logging (audit trail)
+   Login event logging
 -------------------------------------------------- */
 function core_log_login_event(
-    string $emailAttempted,
+    string $email,
     bool $success,
-    string $failReason = 'NONE',
-    ?string $userUidBin = null
+    string $reason = 'NONE',
+    ?string $uid = null
 ): void {
     require 'C:\\inetpub\\core_config\\config.php';
-
-    $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
-    $ip = core_ip_to_varbinary16();
-    $sidHash = hash('sha256', session_id());
-    $successInt = $success ? 1 : 0;
 
     $stmt = $conn->prepare("
         INSERT INTO login_events
@@ -96,13 +104,13 @@ function core_log_login_event(
 
     $stmt->bind_param(
         "ssissss",
-        $userUidBin,
-        $emailAttempted,
-        $successInt,
-        $failReason,
-        $ip,
-        $ua,
-        $sidHash
+        $uid,
+        $email,
+        $success ? 1 : 0,
+        $reason,
+        core_ip_to_varbinary16(),
+        substr($_SERVER['HTTP_USER_AGENT'] ?? '', 255),
+        hash('sha256', session_id())
     );
 
     $stmt->execute();
@@ -110,19 +118,20 @@ function core_log_login_event(
 }
 
 /* -------------------------------------------------
-   Core authentication
+   Login / Logout
 -------------------------------------------------- */
-function core_login(string $userUidBin, string $email, string $role, bool $remember): void {
+function core_login(string $uid, string $email, string $role, bool $remember): void {
     session_regenerate_id(true);
 
-    $_SESSION['core_user_uid']      = $userUidBin; // raw 16 bytes
+    $_SESSION['core_user_uid']      = $uid;
     $_SESSION['core_user_email']    = $email;
     $_SESSION['core_user_role']     = $role;
     $_SESSION['core_last_activity'] = time();
     $_SESSION['core_remember']      = $remember ? 1 : 0;
+    $_SESSION['core_ua_hash']       = hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '');
 
     if ($remember) {
-        core_create_remember_cookie($userUidBin);
+        core_create_remember_cookie($uid);
     }
 }
 
@@ -131,56 +140,27 @@ function core_logout(): void {
 
     if (!empty($_COOKIE[CORE_REMEMBER_COOKIE])) {
         [$selector] = explode(':', $_COOKIE[CORE_REMEMBER_COOKIE], 2);
-
         $stmt = $conn->prepare("DELETE FROM auth_tokens WHERE selector = ?");
         $stmt->bind_param("s", $selector);
         $stmt->execute();
         $stmt->close();
-
-        setcookie(CORE_REMEMBER_COOKIE, '', [
-            'expires'  => time() - 3600,
-            'path'     => '/',
-            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
-            'httponly' => true,
-            'samesite' => 'Lax'
-        ]);
     }
 
+    setcookie(CORE_REMEMBER_COOKIE, '', time() - 3600, '/', '', true, true);
     $_SESSION = [];
-
-    if (ini_get("session.use_cookies")) {
-        $p = session_get_cookie_params();
-        setcookie(session_name(), '', time() - 42000, $p['path'], $p['domain'], $p['secure'], $p['httponly']);
-    }
-
     session_destroy();
 }
 
 /* -------------------------------------------------
-   Guards
--------------------------------------------------- */
-function core_require_login(): void {
-    if (!core_is_logged_in()) {
-        header("Location: /login.php");
-        exit;
-    }
-}
-
-function core_require_admin(): void {
-    core_require_login();
-    if (!core_is_admin()) {
-        http_response_code(403);
-        exit('403 Forbidden');
-    }
-}
-
-/* -------------------------------------------------
-   Inactivity timeout
+   Timeout handling
 -------------------------------------------------- */
 function core_handle_timeout(): void {
-    if (!empty($_SESSION['core_remember'])) {
-        $_SESSION['core_last_activity'] = time();
-        return;
+    if (!hash_equals(
+        $_SESSION['core_ua_hash'] ?? '',
+        hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '')
+    )) {
+        core_logout();
+        exit;
     }
 
     if (!empty($_SESSION['core_last_activity'])) {
@@ -195,35 +175,34 @@ function core_handle_timeout(): void {
 }
 
 /* -------------------------------------------------
-   Remember-me system
+   Remember-me
 -------------------------------------------------- */
-function core_create_remember_cookie(string $userUidBin): void {
+function core_create_remember_cookie(string $uid): void {
     require 'C:\\inetpub\\core_config\\config.php';
 
     $selector  = bin2hex(random_bytes(12));
     $validator = bin2hex(random_bytes(32));
     $hash      = hash('sha256', $validator);
 
-    $expires = (new DateTime('+'.CORE_REMEMBER_DAYS.' days'))->format('Y-m-d H:i:s');
-
-    $conn->prepare("DELETE FROM auth_tokens WHERE user_uid = ?")
-         ->bind_param("s", $userUidBin)
-         ->execute();
+    $stmt = $conn->prepare("DELETE FROM auth_tokens WHERE user_uid = ?");
+    $stmt->bind_param("s", $uid);
+    $stmt->execute();
+    $stmt->close();
 
     $stmt = $conn->prepare("
         INSERT INTO auth_tokens (user_uid, selector, validator_hash, expires_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))
     ");
-    $stmt->bind_param("ssss", $userUidBin, $selector, $hash, $expires);
+    $stmt->bind_param("sss", $uid, $selector, $hash);
     $stmt->execute();
     $stmt->close();
 
     setcookie(CORE_REMEMBER_COOKIE, "$selector:$validator", [
-        'expires'  => time() + CORE_REMEMBER_DAYS * 86400,
+        'expires'  => time() + 86400 * 30,
         'path'     => '/',
-        'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+        'secure'   => true,
         'httponly' => true,
-        'samesite' => 'Lax'
+        'samesite' => 'Strict'
     ]);
 }
 
@@ -236,14 +215,11 @@ function core_try_remember_login(): void {
 
     $stmt = $conn->prepare("
         SELECT user_uid, validator_hash, expires_at
-        FROM auth_tokens
-        WHERE selector = ?
-        LIMIT 1
+        FROM auth_tokens WHERE selector = ? LIMIT 1
     ");
     $stmt->bind_param("s", $selector);
     $stmt->execute();
-    $res = $stmt->get_result();
-    $row = $res->fetch_assoc();
+    $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
     if (!$row || strtotime($row['expires_at']) < time()) return;
@@ -251,22 +227,21 @@ function core_try_remember_login(): void {
 
     $stmt = $conn->prepare("
         SELECT uid, email, role, is_active
-        FROM users
-        WHERE uid = ?
-        LIMIT 1
+        FROM users WHERE uid = ? AND is_active = 1
     ");
     $stmt->bind_param("s", $row['user_uid']);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    if (!$user || !$user['is_active']) return;
+    if (!$user) return;
 
     core_login($user['uid'], $user['email'], $user['role'], true);
+    core_create_remember_cookie($user['uid']); // rotate token
 }
 
 /* -------------------------------------------------
-   Auto-run
+   Auto run
 -------------------------------------------------- */
 core_try_remember_login();
 if (core_is_logged_in()) {

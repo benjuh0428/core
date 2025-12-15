@@ -3,7 +3,7 @@
 
     <main class="hero-section">
         <div class="hero-content">
-            <div class="hero-badge">Server Control • Console • File Manager (soon)</div>
+            <div class="hero-badge">Coming Soon</div>
 
             <img src="src/images/bigcore.png" alt="CORE" class="hero-image">
 
