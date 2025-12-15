@@ -26,16 +26,20 @@ function core_is_https(): bool {
 }
 
 /* -------------------------------------------------
-   Secure session cookies
-   lifetime=0 => browser session only (logout on browser close)
+   Session cookie settings
+   - secure only on HTTPS (otherwise cookie is dropped on HTTP)
+   - SameSite=Lax to allow normal login POST flows
 -------------------------------------------------- */
+$COOKIE_SECURE = core_is_https();
+$COOKIE_SAMESITE = 'Lax'; // IMPORTANT for login forms
+
 session_set_cookie_params([
     'lifetime' => 0,
     'path'     => '/',
     'domain'   => '',
-    'secure'   => core_is_https(),
+    'secure'   => $COOKIE_SECURE,
     'httponly' => true,
-    'samesite' => 'Strict',
+    'samesite' => $COOKIE_SAMESITE,
 ]);
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -54,7 +58,7 @@ function core_set_session_cookie_lifetime(int $seconds): void {
         'domain'   => $params['domain'] ?? '',
         'secure'   => core_is_https(),
         'httponly' => true,
-        'samesite' => 'Strict',
+        'samesite' => $params['samesite'] ?? 'Lax',
     ]);
 }
 
@@ -69,11 +73,10 @@ function core_csrf_token(): string {
 }
 
 function core_csrf_verify(): void {
-    if (
-        empty($_POST['csrf']) ||
-        empty($_SESSION['core_csrf']) ||
-        !hash_equals($_SESSION['core_csrf'], (string)$_POST['csrf'])
-    ) {
+    $post = (string)($_POST['csrf'] ?? '');
+    $sess = (string)($_SESSION['core_csrf'] ?? '');
+
+    if ($post === '' || $sess === '' || !hash_equals($sess, $post)) {
         http_response_code(403);
         exit('Invalid CSRF token');
     }
@@ -122,7 +125,6 @@ function core_ip_to_varbinary16(): ?string {
     $packed = inet_pton($ip);
     if ($packed === false) return null;
 
-    // IPv4 -> pad to 16 bytes, IPv6 already 16 bytes
     return strlen($packed) === 4 ? ($packed . str_repeat("\0", 12)) : $packed;
 }
 
@@ -148,9 +150,7 @@ function core_log_login_event(
         if (!$stmt) return;
 
         $ipBin = core_ip_to_varbinary16();
-        if ($ipBin === null) {
-            $ipBin = str_repeat("\0", 16); // ✅ FIXED (no bad escaping)
-        }
+        if ($ipBin === null) $ipBin = str_repeat("\0", 16);
 
         $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
         $sidHash = hash('sha256', session_id());
@@ -170,7 +170,7 @@ function core_log_login_event(
         $stmt->execute();
         $stmt->close();
     } catch (Throwable $e) {
-        // swallow: NEVER block login because of logging
+        // swallow
     }
 }
 
@@ -220,7 +220,7 @@ function core_logout(): void {
         'domain'   => '',
         'secure'   => core_is_https(),
         'httponly' => true,
-        'samesite' => 'Strict'
+        'samesite' => 'Lax'
     ]);
 
     setcookie(session_name(), '', [
@@ -229,7 +229,7 @@ function core_logout(): void {
         'domain'   => '',
         'secure'   => core_is_https(),
         'httponly' => true,
-        'samesite' => 'Strict'
+        'samesite' => 'Lax'
     ]);
 
     $_SESSION = [];
@@ -240,7 +240,6 @@ function core_logout(): void {
    Timeout handling
 -------------------------------------------------- */
 function core_handle_timeout(): void {
-    // UA bind
     if (!hash_equals(
         $_SESSION['core_ua_hash'] ?? '',
         hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '')
@@ -254,7 +253,6 @@ function core_handle_timeout(): void {
         return;
     }
 
-    // Remember ON => 30-day inactivity timeout
     if (!empty($_SESSION['core_last_activity'])) {
         if (time() - (int)$_SESSION['core_last_activity'] > CORE_SESSION_TIMEOUT_REMEMBER) {
             core_logout();
@@ -276,7 +274,6 @@ function core_create_remember_cookie(string $uid): void {
     $validator = bin2hex(random_bytes(32));
     $hash      = hash('sha256', $validator);
 
-    // delete old tokens
     $stmt = $conn->prepare("DELETE FROM auth_tokens WHERE user_uid = ?");
     if ($stmt) {
         $stmt->bind_param("s", $uid);
@@ -300,7 +297,7 @@ function core_create_remember_cookie(string $uid): void {
         'domain'   => '',
         'secure'   => core_is_https(),
         'httponly' => true,
-        'samesite' => 'Strict'
+        'samesite' => 'Lax'
     ]);
 }
 
