@@ -12,7 +12,6 @@ $errorPublic = '';
 $expired = !empty($_GET['expired']);
 $formAction = '/login.php';
 
-/* helpers */
 function core_table_exists(mysqli $conn, string $table): bool {
     try {
         $stmt = $conn->prepare("SHOW TABLES LIKE ?");
@@ -27,6 +26,7 @@ function core_table_exists(mysqli $conn, string $table): bool {
         return false;
     }
 }
+
 function core_column_exists(mysqli $conn, string $table, string $column): bool {
     try {
         $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
@@ -42,13 +42,12 @@ function core_column_exists(mysqli $conn, string $table, string $column): bool {
     }
 }
 
-/* POST login */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // ✅ CSRF CHECK (only once)
+    // ✅ CSRF must run BEFORE any redirects / login actions
     core_csrf_verify();
 
-    $email    = trim((string)($_POST['email'] ?? $_POST['username'] ?? ''));
+    $email    = trim((string)($_POST['email'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $remember = !empty($_POST['remember']);
 
@@ -57,11 +56,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorPublic = 'Please enter a valid email address.';
     } elseif (!isset($conn) || !($conn instanceof mysqli) || $conn->connect_errno) {
-        core_log_error("DB connection unavailable on login", [
-            "email" => $email,
-            "ip" => $_SERVER['REMOTE_ADDR'] ?? '',
-            "db_err" => $conn->connect_error ?? 'no-conn'
-        ]);
         $errorPublic = 'Database is currently unavailable. Please try again later.';
     } else {
         try {
@@ -99,18 +93,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($failCount >= 5) {
                 $errorPublic = 'Too many login attempts. Please wait 15 minutes.';
             } else {
+
                 $stmt = $conn->prepare("
                     SELECT uid, email, password_hash, role, is_active
                     FROM users
                     WHERE email = ?
                     LIMIT 1
                 ");
-
                 if (!$stmt) {
-                    core_log_error("Prepare failed for users lookup", [
-                        "err" => $conn->error,
-                        "email" => $email,
-                    ]);
                     $errorPublic = 'Database is currently unavailable. Please try again later.';
                 } else {
                     $stmt->bind_param("s", $email);
@@ -131,34 +121,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         core_log_login_event($email, true, 'NONE', (string)$user['uid']);
 
-                        try {
-                            $up = $conn->prepare("UPDATE users SET last_login_at = NOW() WHERE uid = ?");
-                            if ($up) {
-                                $up->bind_param("s", $user['uid']);
-                                $up->execute();
-                                $up->close();
-                            }
-                        } catch (Throwable $e) {}
-
-                        core_login(
-                            (string)$user['uid'],
-                            (string)$user['email'],
-                            (string)$user['role'],
-                            $remember
-                        );
+                        core_login((string)$user['uid'], (string)$user['email'], (string)$user['role'], $remember);
 
                         header("Location: /serverlist.php");
                         exit;
                     }
                 }
             }
-
         } catch (Throwable $e) {
-            core_log_error("Login exception", [
-                "err" => $e->getMessage(),
-                "email" => $email,
-                "mysql_err" => $conn->error ?? '',
-            ]);
             $errorPublic = 'An unexpected error occurred. Please try again.';
         }
     }
