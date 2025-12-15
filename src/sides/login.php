@@ -98,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ]);
                     }
 
-                    // ✅ LOGIN + REDIRECT
+                    // LOGIN + REDIRECT
                     core_login(
                         $user['uid'],
                         $user['email'],
