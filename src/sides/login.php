@@ -1,5 +1,6 @@
 <?php
-require_once __DIR__ . '/src/hook/auth.php';
+require_once __DIR__ . '/../hook/auth.php';
+require_once __DIR__ . '/../hook/core_error.php';
 require_once 'C:\\inetpub\\core_config\\config.php';
 
 if (core_is_logged_in()) {
@@ -12,8 +13,8 @@ $expired = !empty($_GET['expired']);
 
 /**
  * IIS/PHP-CGI fallback:
- * Sometimes $_POST is empty even on POST.
- * This reads raw input and parses form-urlencoded bodies.
+ * Sometimes $_POST is empty even on POST (proxy stripping bodies, IIS quirk, etc).
+ * This reads raw input and parses form-urlencoded or JSON bodies.
  */
 function core_read_post_fallback(): array {
     // If PHP already parsed it, use it
@@ -22,12 +23,22 @@ function core_read_post_fallback(): array {
     $raw = file_get_contents('php://input');
     if (!is_string($raw) || $raw === '') return [];
 
+    $contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? ''));
+
+    // JSON bodies (e.g., fetch)
+    if (strpos($contentType, 'application/json') !== false) {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+    }
+
     $out = [];
     parse_str($raw, $out); // works for application/x-www-form-urlencoded
     return is_array($out) ? $out : [];
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
     $post = core_read_post_fallback();
 
@@ -36,11 +47,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // If still empty, it means the browser didn't submit the fields or inputs not inside form.
     if ($email === '' || $password === '') {
-        $errorPublic = 'Please enter email and password.';
+        core_log_error('Login request missing email/password', [
+            'content_type'   => $_SERVER['CONTENT_TYPE'] ?? '',
+            'content_length' => $_SERVER['CONTENT_LENGTH'] ?? '',
+            'post_keys'      => array_keys($post),
+            'method'         => $_SERVER['REQUEST_METHOD'] ?? '',
+            'uri'            => $_SERVER['REQUEST_URI'] ?? '',
+            'client'         => $_SERVER['REMOTE_ADDR'] ?? '',
+        ]);
+        $errorPublic = 'We did not receive your email and password. Please try again.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorPublic = 'Please enter a valid email address.';
     } elseif (!isset($conn) || !($conn instanceof mysqli) || $conn->connect_errno) {
         $errorPublic = 'Database is currently unavailable. Please try again later.';
+        core_log_error('Login blocked: DB unavailable', [
+            'has_conn' => isset($conn),
+            'errno'    => $conn->connect_errno ?? null,
+            'error'    => $conn->connect_error ?? null,
+        ]);
     } else {
         try {
             $stmt = $conn->prepare("
@@ -52,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$stmt) {
                 $errorPublic = 'Database is currently unavailable. Please try again later.';
+                core_log_error('Login prepare failed', ['error' => $conn->error ?? 'unknown']);
             } else {
                 $stmt->bind_param("s", $email);
                 $stmt->execute();
@@ -66,6 +91,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ) {
                     // Don't leak which part failed
                     $errorPublic = 'Wrong email or password.';
+                    core_log_error('Login failed', [
+                        'email'  => $email,
+                        'reason' => !$user ? 'not_found_or_inactive' : 'bad_password_or_inactive',
+                    ]);
                 } else {
                     core_login_user((string)$user['uid'], (string)$user['email'], (string)$user['role']);
                     header("Location: /serverlist.php");
@@ -74,6 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } catch (Throwable $e) {
             $errorPublic = 'An unexpected error occurred. Please try again.';
+            core_log_error('Login exception', ['error' => $e->getMessage()]);
         }
     }
 }
@@ -109,8 +139,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
-        <!-- IMPORTANT: action="" stays on /login.php -->
-        <form class="login-form" method="post" action="" autocomplete="on">
+        <form class="login-form" method="post" action="/login.php" autocomplete="on">
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
@@ -123,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="login-actions">
                 <button class="btn btn-primary" type="submit">Login</button>
-                <a class="back-link" href="/">← Back to Home</a>
+                <a class="back-link" href="/"><- Back to Home</a>
             </div>
         </form>
     </div>
