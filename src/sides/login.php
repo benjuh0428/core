@@ -12,6 +12,18 @@ $errorPublic = '';
 $expired = !empty($_GET['expired']);
 
 /**
+ * Cache the raw request body so we don't lose it on multiple reads.
+ */
+function core_raw_body(): string {
+    static $raw = null;
+    if ($raw === null) {
+        $body = file_get_contents('php://input');
+        $raw = is_string($body) ? $body : '';
+    }
+    return $raw;
+}
+
+/**
  * IIS/PHP-CGI fallback:
  * Sometimes $_POST is empty even on POST (proxy stripping bodies, IIS quirk, etc).
  * This reads raw input and parses form-urlencoded or JSON bodies.
@@ -20,7 +32,7 @@ function core_read_post_fallback(): array {
     // If PHP already parsed it, use it
     if (!empty($_POST) && is_array($_POST)) return $_POST;
 
-    $raw = file_get_contents('php://input');
+    $raw = core_raw_body();
     if (!is_string($raw) || $raw === '') return [];
 
     $contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? ''));
@@ -43,8 +55,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     $post = core_read_post_fallback();
 
     // Attempt to recover credentials from either body parsing or PHP's request array.
-    $email    = trim((string)($post['email'] ?? $post['username'] ?? $_REQUEST['email'] ?? $_REQUEST['username'] ?? ''));
-    $password = (string)($post['password'] ?? $_REQUEST['password'] ?? '');
+    $email = trim((string)(
+        $post['email'] ??
+        $post['username'] ??
+        filter_input(INPUT_POST, 'email') ??
+        filter_input(INPUT_POST, 'username') ??
+        $_REQUEST['email'] ??
+        $_REQUEST['username'] ??
+        ''
+    ));
+
+    $password = (string)(
+        $post['password'] ??
+        filter_input(INPUT_POST, 'password') ??
+        $_REQUEST['password'] ??
+        ''
+    );
 
     // If still empty, it means the browser didn't submit the fields or inputs not inside form.
     if ($email === '' || $password === '') {
@@ -55,7 +81,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             'method'         => $_SERVER['REQUEST_METHOD'] ?? '',
             'uri'            => $_SERVER['REQUEST_URI'] ?? '',
             'client'         => $_SERVER['REMOTE_ADDR'] ?? '',
-            'raw_preview'    => substr(file_get_contents('php://input') ?: '', 0, 200),
+            'raw_preview'    => substr(core_raw_body(), 0, 200),
+            'request_keys'   => array_keys($_REQUEST ?? []),
         ]);
         $errorPublic = 'We did not receive your email and password. Please try again.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -141,7 +168,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             </div>
         <?php endif; ?>
 
-        <form class="login-form" method="post" action="/login.php" autocomplete="on">
+        <form class="login-form" method="post" action="" enctype="application/x-www-form-urlencoded" autocomplete="on">
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
