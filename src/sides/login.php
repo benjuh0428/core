@@ -42,8 +42,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
     $post = core_read_post_fallback();
 
-    $email    = trim((string)($post['email'] ?? $post['username'] ?? ''));
-    $password = (string)($post['password'] ?? '');
+    // Attempt to recover credentials from either body parsing or PHP's request array.
+    $email    = trim((string)($post['email'] ?? $post['username'] ?? $_REQUEST['email'] ?? $_REQUEST['username'] ?? ''));
+    $password = (string)($post['password'] ?? $_REQUEST['password'] ?? '');
 
     // If still empty, it means the browser didn't submit the fields or inputs not inside form.
     if ($email === '' || $password === '') {
@@ -54,6 +55,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             'method'         => $_SERVER['REQUEST_METHOD'] ?? '',
             'uri'            => $_SERVER['REQUEST_URI'] ?? '',
             'client'         => $_SERVER['REMOTE_ADDR'] ?? '',
+            'raw_preview'    => substr(file_get_contents('php://input') ?: '', 0, 200),
         ]);
         $errorPublic = 'We did not receive your email and password. Please try again.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
