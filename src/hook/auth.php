@@ -20,7 +20,7 @@ session_set_cookie_params([
     'domain'   => '',
     'secure'   => $secure,    // only secure if https
     'httponly' => true,
-    'samesite' => 'Lax',      // safe and works for normal forms
+    'samesite' => 'Lax',      // safe and works for login forms
 ]);
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -30,7 +30,7 @@ if (session_status() === PHP_SESSION_NONE) {
 /* ---------------------------------------
    Config
 ---------------------------------------- */
-define('CORE_IDLE_TIMEOUT', 60 * 60 * 12); // 12 hours (change if you want)
+define('CORE_IDLE_TIMEOUT', 60 * 60 * 12); // 12 hours
 
 /* ---------------------------------------
    Helpers
@@ -55,17 +55,13 @@ function core_user_role(): ?string {
    Login
 ---------------------------------------- */
 function core_login_user(string $uid, string $email, string $role): void {
-    // Prevent session fixation
     session_regenerate_id(true);
 
     $_SESSION['core_uid']   = $uid;
     $_SESSION['core_email'] = $email;
     $_SESSION['core_role']  = $role;
 
-    // Bind to UA (basic hijack protection)
-    $_SESSION['core_ua'] = hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '');
-
-    // Idle timeout tracking
+    $_SESSION['core_ua']   = hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '');
     $_SESSION['core_last'] = time();
 }
 
@@ -73,10 +69,8 @@ function core_login_user(string $uid, string $email, string $role): void {
    Logout
 ---------------------------------------- */
 function core_logout_user(): void {
-    // clear session
     $_SESSION = [];
 
-    // clear session cookie
     setcookie(session_name(), '', [
         'expires'  => time() - 3600,
         'path'     => '/',
@@ -90,7 +84,7 @@ function core_logout_user(): void {
 }
 
 /* ---------------------------------------
-   Guard (protect pages)
+   Guard
 ---------------------------------------- */
 function core_require_login(): void {
     if (!core_is_logged_in()) {
@@ -98,7 +92,6 @@ function core_require_login(): void {
         exit;
     }
 
-    // UA bind check
     $ua = hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? '');
     if (!hash_equals($_SESSION['core_ua'] ?? '', $ua)) {
         core_logout_user();
@@ -106,7 +99,6 @@ function core_require_login(): void {
         exit;
     }
 
-    // idle timeout check
     $last = (int)($_SESSION['core_last'] ?? 0);
     if ($last > 0 && (time() - $last) > CORE_IDLE_TIMEOUT) {
         core_logout_user();
@@ -114,6 +106,5 @@ function core_require_login(): void {
         exit;
     }
 
-    // refresh activity timestamp
     $_SESSION['core_last'] = time();
 }

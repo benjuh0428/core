@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/src/hook/auth.php';
 
-// already logged in? go in
 if (core_is_logged_in()) {
     header("Location: /serverlist.php");
     exit;

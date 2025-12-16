@@ -34,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $user = $res ? $res->fetch_assoc() : null;
                 $stmt->close();
 
-                // Generic error message (no info leak)
+                // Generic error message: do NOT leak details
                 if (!$user || (int)$user['is_active'] !== 1 || !password_verify($password, (string)$user['password_hash'])) {
                     $errorPublic = 'Wrong email or password.';
                 } else {
@@ -44,7 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         } catch (Throwable $e) {
-            // Do not leak details
             $errorPublic = 'An unexpected error occurred. Please try again.';
         }
     }
@@ -71,7 +70,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
-        <form class="login-form" method="post" action="/login.php">
+        <!-- IMPORTANT: action="" posts back to THIS file -->
+        <form class="login-form" method="post" action="">
+
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
