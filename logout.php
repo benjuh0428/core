@@ -1,7 +1,6 @@
 <?php
-require_once __DIR__ . '/src/hook/session.php';
+require_once __DIR__ . '/src/hook/auth.php';
 
-core_logout();
-header("Location: " . (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . '/login.php');
+core_logout_user();
+header("Location: /login.php");
 exit;
-?>

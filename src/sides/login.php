@@ -1,55 +1,14 @@
 <?php
-require_once __DIR__ . '/../hook/session.php';
-require_once __DIR__ . '/../hook/core_error.php';
+require_once __DIR__ . '/../hook/auth.php';
 require_once 'C:\\inetpub\\core_config\\config.php';
-
-if (basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'login.php') {
-    header("Location: /login.php");
-    exit;
-}
 
 $errorPublic = '';
 $expired = !empty($_GET['expired']);
-$formAction = '/login.php';
-
-function core_table_exists(mysqli $conn, string $table): bool {
-    try {
-        $stmt = $conn->prepare("SHOW TABLES LIKE ?");
-        if (!$stmt) return false;
-        $stmt->bind_param("s", $table);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $ok = $res && $res->num_rows > 0;
-        $stmt->close();
-        return $ok;
-    } catch (Throwable $e) {
-        return false;
-    }
-}
-
-function core_column_exists(mysqli $conn, string $table, string $column): bool {
-    try {
-        $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
-        if (!$stmt) return false;
-        $stmt->bind_param("s", $column);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $ok = $res && $res->num_rows > 0;
-        $stmt->close();
-        return $ok;
-    } catch (Throwable $e) {
-        return false;
-    }
-}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // ✅ CSRF must run BEFORE any redirects / login actions
-    core_csrf_verify();
-
     $email    = trim((string)($_POST['email'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
-    $remember = !empty($_POST['remember']);
 
     if ($email === '' || $password === '') {
         $errorPublic = 'Please enter email and password.';
@@ -59,76 +18,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorPublic = 'Database is currently unavailable. Please try again later.';
     } else {
         try {
-            $failCount = 0;
+            $stmt = $conn->prepare("
+                SELECT uid, email, password_hash, role, is_active
+                FROM users
+                WHERE email = ?
+                LIMIT 1
+            ");
 
-            if (core_table_exists($conn, 'login_events')) {
-                $hasCreatedAt = core_column_exists($conn, 'login_events', 'created_at');
-
-                if ($hasCreatedAt) {
-                    $bf = $conn->prepare("
-                        SELECT COUNT(*)
-                        FROM login_events
-                        WHERE email_attempted = ?
-                          AND success = 0
-                          AND created_at > NOW() - INTERVAL 15 MINUTE
-                    ");
-                } else {
-                    $bf = $conn->prepare("
-                        SELECT COUNT(*)
-                        FROM login_events
-                        WHERE email_attempted = ?
-                          AND success = 0
-                    ");
-                }
-
-                if ($bf) {
-                    $bf->bind_param("s", $email);
-                    $bf->execute();
-                    $bf->bind_result($failCount);
-                    $bf->fetch();
-                    $bf->close();
-                }
-            }
-
-            if ($failCount >= 5) {
-                $errorPublic = 'Too many login attempts. Please wait 15 minutes.';
+            if (!$stmt) {
+                $errorPublic = 'Database is currently unavailable. Please try again later.';
             } else {
+                $stmt->bind_param("s", $email);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $user = $res ? $res->fetch_assoc() : null;
+                $stmt->close();
 
-                $stmt = $conn->prepare("
-                    SELECT uid, email, password_hash, role, is_active
-                    FROM users
-                    WHERE email = ?
-                    LIMIT 1
-                ");
-                if (!$stmt) {
-                    $errorPublic = 'Database is currently unavailable. Please try again later.';
+                // Generic error message (no info leak)
+                if (!$user || (int)$user['is_active'] !== 1 || !password_verify($password, (string)$user['password_hash'])) {
+                    $errorPublic = 'Wrong email or password.';
                 } else {
-                    $stmt->bind_param("s", $email);
-                    $stmt->execute();
-                    $res = $stmt->get_result();
-                    $user = $res ? $res->fetch_assoc() : null;
-                    $stmt->close();
-
-                    if (!$user) {
-                        core_log_login_event($email, false, 'NO_USER', null);
-                        $errorPublic = 'Wrong email or password.';
-                    } elseif ((int)$user['is_active'] !== 1) {
-                        core_log_login_event($email, false, 'INACTIVE', (string)$user['uid']);
-                        $errorPublic = 'This account is disabled.';
-                    } elseif (!password_verify($password, (string)$user['password_hash'])) {
-                        core_log_login_event($email, false, 'BAD_PASSWORD', (string)$user['uid']);
-                        $errorPublic = 'Wrong email or password.';
-                    } else {
-                        core_log_login_event($email, true, 'NONE', (string)$user['uid']);
-
-                        core_login((string)$user['uid'], (string)$user['email'], (string)$user['role'], $remember);
-
-                        header("Location: /serverlist.php");
-                        exit;
-                    }
+                    core_login_user((string)$user['uid'], (string)$user['email'], (string)$user['role']);
+                    header("Location: /serverlist.php");
+                    exit;
                 }
             }
         } catch (Throwable $e) {
+            // Do not leak details
             $errorPublic = 'An unexpected error occurred. Please try again.';
         }
     }
@@ -155,9 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
-        <form class="login-form" method="post" action="<?= $formAction ?>">
-            <input type="hidden" name="csrf" value="<?= htmlspecialchars(core_csrf_token()) ?>">
-
+        <form class="login-form" method="post" action="/login.php">
             <div>
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" autocomplete="username" required>
@@ -166,11 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div>
                 <label for="password">Password</label>
                 <input id="password" name="password" type="password" autocomplete="current-password" required>
-            </div>
-
-            <div class="remember-row">
-                <input id="remember" name="remember" type="checkbox">
-                <label for="remember">Remember me (30 days)</label>
             </div>
 
             <div class="login-actions">
