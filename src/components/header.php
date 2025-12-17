@@ -12,7 +12,14 @@
         </ul>
 
         <div class="nav-actions">
-            <a class="nav-btn" href="login.php">Login</a>
+            <?php
+            require_once __DIR__ . '/../hook/auth.php';
+            if (core_is_logged_in()) {
+                echo '<a class="nav-btn" href="serverlist.php">Console</a>';
+            } else {
+                echo '<a class="nav-btn" href="login.php">Login</a>';
+            }
+            ?>
         </div>
     </nav>
 </header>

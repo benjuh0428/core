@@ -87,11 +87,13 @@ function core_require_login(): void {
         exit;
     }
 
-    $last = (int)($_SESSION['core_last'] ?? 0);
-    if ($last > 0 && (time() - $last) > CORE_IDLE_TIMEOUT) {
-        core_logout_user();
-        header("Location: /login.php?expired=1");
-        exit;
+    if (!($_SESSION['remember'] ?? false)) {
+        $last = (int)($_SESSION['core_last'] ?? 0);
+        if ($last > 0 && (time() - $last) > CORE_IDLE_TIMEOUT) {
+            core_logout_user();
+            header("Location: /login.php?expired=1");
+            exit;
+        }
     }
 
     $_SESSION['core_last'] = time();

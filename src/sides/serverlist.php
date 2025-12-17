@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../hook/session.php';
+require_once __DIR__ . '/../hook/auth.php';
 require_once __DIR__ . '/../hook/core_error.php';
 
 core_require_login();
@@ -59,7 +59,7 @@ try {
         <section class="panel">
             <div class="panel-head">
                 <div class="panel-title">Available servers</div>
-                <a class="nav-btn" href="/logout.php">Logout</a>
+                <a class="nav-btn" href="/login.php?logout=1">Logout</a>
             </div>
 
             <?php if ($publicError !== ''): ?>
